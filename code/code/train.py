@@ -15,7 +15,8 @@ from east_dataset import EASTDataset
 from dataset import SceneTextDataset
 from model import EAST
 
-
+import wandb
+        
 def parse_args():
     parser = ArgumentParser()
 
@@ -68,6 +69,14 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[max_epoch // 2], gamma=0.1)
 
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="data_centric",
+        entity='cv-12',
+        name = 'SJ'
+    )
+
+
     model.train()
     for epoch in range(max_epoch):
         epoch_loss, epoch_start = 0, time.time()
@@ -88,6 +97,7 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
                     'Cls loss': extra_info['cls_loss'], 'Angle loss': extra_info['angle_loss'],
                     'IoU loss': extra_info['iou_loss']
                 }
+                wandb.log({'Cls loss': extra_info['cls_loss'], 'Angle loss': extra_info['angle_loss'], 'IoU loss': extra_info['iou_loss']})
                 pbar.set_postfix(val_dict)
 
         scheduler.step()
