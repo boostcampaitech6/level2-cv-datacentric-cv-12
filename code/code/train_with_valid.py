@@ -35,7 +35,7 @@ logging.basicConfig(filename=log_file, level=logging.INFO, format='%(asctime)s -
 wandb.init(
     project="data_centric",
     entity='cv-12',
-    name = 'valid_test3'
+    name = 'wandb_name'
 )
 
 def parse_args():
@@ -186,7 +186,7 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
             torch.save(model.state_dict(), ckpt_fpath)
 
         model.eval()
-        valid_start = time.time()
+        valid_time = time.time()
 
         if (epoch + 1) % valid_interval == 0 and epoch + 1 >= valid_start:
 
@@ -220,7 +220,7 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
             result = calc_deteval_metrics(pred_bboxes_dict, gt_bboxes_dict)
 
             logging.info('-' * 30 + f' VALID in {epoch + 1} epoch ' + '-' * 30)
-            logging.info('%s | Elapsed time: %s', result['total'], timedelta(seconds=time.time() - epoch_start))
+            logging.info('%s | Elapsed time: %s', result['total'], timedelta(seconds=time.time() - valid_time))
             logging.info('-' * 80)
 
             wandb.log({'Epoch': epoch + 1,'precision': result['total']['precision'], 'recall': result['total']['recall'], 'hmean': result['total']['hmean']})
