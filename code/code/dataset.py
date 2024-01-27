@@ -342,8 +342,9 @@ class SceneTextDataset(Dataset):
                  ignore_under_threshold=10,
                  drop_under_threshold=1,
                  color_jitter=True,
-                 normalize=True):
-        with open(osp.join(root_dir, 'ufo/{}.json'.format(split)), 'r') as f:
+                 normalize=True,
+                 json_name='train'):
+        with open(osp.join(root_dir, 'ufo/{}.json'.format(json_name)), 'r') as f:
             anno = json.load(f)
 
         self.anno = anno
