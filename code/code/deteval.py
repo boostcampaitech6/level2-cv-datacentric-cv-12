@@ -203,12 +203,13 @@ def calc_deteval_metrics(pred_bboxes_dict, gt_bboxes_dict, transcriptions_dict=N
 
         for n in range(len(pointsList)):
             points = pointsList[n]
-            transcription = transcriptionsList[n]
-            dontCare = transcription == "###" or len(points) > 4
+            # transcription = transcriptionsList[n]
+            # dontCare = transcription == "###" or len(points) > 4
             gtRect = Rectangle(*points)
             gtRects.append(gtRect)
             gtPolPoints.append(np.array(points).tolist())
-            if dontCare:
+            # if dontCare:
+            if len(points) > 4:
                 gtDontCareRectsNum.append( len(gtRects)-1 )
 
         evaluationLog += "GT rectangles: " + str(len(gtRects)) + (" (" + str(len(gtDontCareRectsNum)) + " don't care)\n" if len(gtDontCareRectsNum)>0 else "\n")
