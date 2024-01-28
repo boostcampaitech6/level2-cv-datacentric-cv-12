@@ -35,7 +35,7 @@ logging.basicConfig(filename=log_file, level=logging.INFO, format='%(asctime)s -
 wandb.init(
     project="data_centric",
     entity='cv-12',
-    name = 'wandb_name'
+    name = 'wnadb_name'
 )
 
 def parse_args():
@@ -58,9 +58,10 @@ def parse_args():
     parser.add_argument('--save_interval', type=int, default=5)
     parser.add_argument('--ignore_tags', type=list, default=['masked', 'excluded-region', 'maintable', 'stamp'])
 
-    parser.add_argument('--pretrained', type=str, default=None) # pretrained 모델 경로 입력
+    parser.add_argument('--trained_pth', type=str, default=None) # 계속 학습시킬 모델 경로 입력
     parser.add_argument('--valid_interval', type=int, default=5) # 몇 epoch마다 valid할 것인지
-    parser.add_argument('--valid_start', type=int, default=0) # 몇 epoch부터 valid할 것인지
+    parser.add_argument('--valid_start', type=int, default=1) # 몇 epoch부터 valid할 것인지
+    parser.add_argument('--valid_batch_size', type=int, default=5) # valid batch size
 
     parser.add_argument('--train_json', type=str, default='train_instances_default_ufo')
     parser.add_argument('--valid_json', type=str, default='val_instances_default_ufo')
@@ -77,7 +78,7 @@ def parse_args():
 
 def do_training(data_dir, model_dir, device, image_size, input_size, num_workers, batch_size,
                 learning_rate, max_epoch, save_interval, ignore_tags,
-                pretrained, valid_interval, valid_start,
+                trained_pth, valid_interval, valid_start, valid_batch_size,
                 train_json, valid_json, train_folder, valid_folder):
 
     dataset = SceneTextDataset(
@@ -111,18 +112,23 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
     for file_name in valid_data['images']:
         gt_bboxes_dict[file_name] = []
         for word_id in valid_data['images'][file_name]['words']:
-            gt_bboxes_dict[file_name].append(valid_data['images'][file_name]['words'][word_id]['points'])
+            for tag in valid_data['images'][file_name]['words'][word_id]['tags']:
+                if tag in ignore_tags:
+                    break
+            else:
+                gt_bboxes_dict[file_name].append(valid_data['images'][file_name]['words'][word_id]['points'])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = EAST()
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[max_epoch // 2], gamma=0.1)
+    # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[(max_epoch // 5) * i for i in range(1, 5)], gamma=0.5)
+    scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-5)
 
     # 저장된 모델 불러오기
-    if pretrained:
-        # checkpoint = torch.load('/data/ephemeral/home/code/trained_models/test_latest.pth')
-        checkpoint = torch.load(pretrained)
+    if trained_pth:
+        print('load checkpoint')
+        checkpoint = torch.load(trained_pth)
         model.load_state_dict(checkpoint)
 
     max_f1 = [0, 0] # 최대 f1 score와 그 epoch을 저장해두는 값
@@ -171,13 +177,16 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
 
             wandb.log({'Epoch': epoch + 1,'Cls loss': extra_info['cls_loss'], 'Angle loss': extra_info['angle_loss'], 'IoU loss': extra_info['iou_loss']})
 
+        # 학습률 가져오기
+        current_lr = optimizer.param_groups[0]['lr']
+
+        logging.info('Mean loss: {:.4f} | lr: {} | Elapsed time: {}'.format(
+            epoch_loss / num_batches, current_lr, timedelta(seconds=time.time() - epoch_start)))
+
+        wandb.log({'Epoch': epoch + 1,'Mean loss': epoch_loss / num_batches, 'lr': current_lr})
+        
         scheduler.step()
 
-        logging.info('Mean loss: {:.4f} | Elapsed time: {}'.format(
-            epoch_loss / num_batches, timedelta(seconds=time.time() - epoch_start)))
-
-        wandb.log({'Epoch': epoch + 1,'Mean loss': epoch_loss / num_batches})
-        
         if (epoch + 1) % save_interval == 0:
             if not osp.exists(model_dir):
                 os.makedirs(model_dir)
@@ -187,6 +196,7 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
 
         model.eval()
         valid_time = time.time()
+        too_long = False # 5분 이상이면 valid를 안하도록 하는 flag
 
         if (epoch + 1) % valid_interval == 0 and epoch + 1 >= valid_start:
 
@@ -194,48 +204,64 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
 
             images = []
 
+            i = 0
             for file_name in valid_data['images']:
+                i += 1
                 image_fpath = data_dir + '/img/' + valid_folder + '/' + file_name
                 image_fnames.append(osp.basename(image_fpath))
 
                 images.append(cv2.imread(image_fpath)[:, :, ::-1])
-                if len(images) == batch_size:
+                if len(images) == valid_batch_size:
                     by_sample_bboxes.extend(detect(model, images, input_size))
+                    print(f'{i}번째 detect done')
                     images = []
+                    if time.time() - valid_time > 300:
+                        too_long = True
+                        break
+            
+            if too_long:
+                print(f'valid passed, time spend {timedelta(seconds=time.time() - valid_time)}')
 
-            if len(images):
-                by_sample_bboxes.extend(detect(model, images, input_size))
+            else:
+                if len(images):
+                    by_sample_bboxes.extend(detect(model, images, input_size))
 
-            ufo_result = dict(images=dict())
-            for image_fname, bboxes in zip(image_fnames, by_sample_bboxes):
-                words_info = {idx: dict(points=bbox.tolist()) for idx, bbox in enumerate(bboxes)}
-                ufo_result['images'][image_fname] = dict(words=words_info)
+                ufo_result = dict(images=dict())
+                for image_fname, bboxes in zip(image_fnames, by_sample_bboxes):
+                    words_info = {idx: dict(points=bbox.tolist()) for idx, bbox in enumerate(bboxes)}
+                    ufo_result['images'][image_fname] = dict(words=words_info)
 
-            pred_bboxes_dict = {}
-            for file_name in ufo_result['images']:
-                pred_bboxes_dict[file_name] = []
-                for word_id in ufo_result['images'][file_name]['words']:
-                    pred_bboxes_dict[file_name].append(ufo_result['images'][file_name]['words'][word_id]['points'])
+                pred_bboxes_dict = {}
+                for file_name in ufo_result['images']:
+                    pred_bboxes_dict[file_name] = []
+                    for word_id in ufo_result['images'][file_name]['words']:
+                        pred_bboxes_dict[file_name].append(ufo_result['images'][file_name]['words'][word_id]['points'])
 
-            result = calc_deteval_metrics(pred_bboxes_dict, gt_bboxes_dict)
+                # # 딕셔너리를 파일로 저장
+                # with open(f'pred_bbox_{epoch + 1}.json', 'w', encoding='utf-8') as json_file:
+                #     json.dump(pred_bboxes_dict, json_file, ensure_ascii=False, indent=2)
 
-            logging.info('-' * 30 + f' VALID in {epoch + 1} epoch ' + '-' * 30)
-            logging.info('%s | Elapsed time: %s', result['total'], timedelta(seconds=time.time() - valid_time))
-            logging.info('-' * 80)
+                result = calc_deteval_metrics(pred_bboxes_dict, gt_bboxes_dict)
 
-            wandb.log({'Epoch': epoch + 1,'precision': result['total']['precision'], 'recall': result['total']['recall'], 'hmean': result['total']['hmean']})
+                logging.info('-' * 30 + f' VALID in {epoch + 1} epoch ' + '-' * 30)
+                logging.info('%s | Elapsed time: %s', result['total'], timedelta(seconds=time.time() - valid_time))
+                logging.info('-' * 80)
 
-            # f1 score (hmean)이 최대일때 best 저장
-            if result['total']['hmean'] > max_f1[0]:
-                if not osp.exists(model_dir):
-                    os.makedirs(model_dir)
+                wandb.log({'Epoch': epoch + 1,'precision': result['total']['precision'], 'recall': result['total']['recall'], 'hmean': result['total']['hmean']})
 
-                ckpt_fpath = osp.join(model_dir, 'best.pth')
-                torch.save(model.state_dict(), ckpt_fpath)
+                # f1 score (hmean)이 최대일때 best 저장
+                if result['total']['hmean'] > max_f1[0]:
+                    if not osp.exists(model_dir):
+                        os.makedirs(model_dir)
 
-                max_f1 = [result['total']['hmean'], epoch + 1]
+                    ckpt_fpath = osp.join(model_dir, 'best.pth')
+                    torch.save(model.state_dict(), ckpt_fpath)
 
-                logging.info(f'{epoch + 1} epoch model is best')
+                    max_f1 = [result['total']['hmean'], epoch + 1]
+
+                    logging.info(f'{epoch + 1} epoch model is best')
+
+    print(f'best f1: {max_f1[0]} | best epoch: {max_f1[1]}')
 
 def main(args):
     do_training(**args.__dict__)
